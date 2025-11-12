@@ -761,11 +761,11 @@ static z_result_t _z_session_rc_init(z_owned_session_t *zs, _z_id_t *zid) {
 z_result_t z_open(z_owned_session_t *zs, z_moved_config_t *config, const z_open_options_t *options) {
     _ZP_UNUSED(options);
 
-    _z_config_t *cfg = &config->_this._val;
     if (config == NULL) {
         _Z_ERROR("A valid config is missing.");
         _Z_ERROR_RETURN(_Z_ERR_GENERIC);
     }
+    _z_config_t *cfg = &config->_this._val;
 
     _z_id_t zid = _z_session_get_zid(cfg);
     if (!_z_id_check(zid)) {
@@ -927,10 +927,7 @@ const z_loaned_slice_t *z_string_as_slice(const z_loaned_string_t *str) { return
 z_priority_t z_priority_default(void) { return Z_PRIORITY_DEFAULT; }
 
 #if Z_FEATURE_PUBLICATION == 1
-void _z_publisher_drop(_z_publisher_t *pub) {
-    _z_undeclare_publisher(pub);
-    _z_publisher_clear(pub);
-}
+void _z_publisher_drop(_z_publisher_t *pub) { _z_undeclare_publisher(pub); }
 
 _Z_OWNED_FUNCTIONS_VALUE_NO_COPY_NO_MOVE_IMPL(_z_publisher_t, publisher, _z_publisher_check, _z_publisher_null,
                                               _z_publisher_drop)
@@ -1092,8 +1089,7 @@ z_result_t z_declare_publisher(const z_loaned_session_t *zs, z_owned_publisher_t
         _z_declare_publisher(zs, final_key, opt.encoding == NULL ? NULL : &opt.encoding->_this._val,
                              opt.congestion_control, opt.priority, opt.is_express, reliability);
     // Create write filter
-    z_result_t res =
-        _z_write_filter_create(_Z_RC_IN_VAL(zs), &int_pub._filter, keyexpr_aliased, _Z_INTEREST_FLAG_SUBSCRIBERS);
+    z_result_t res = _z_write_filter_create(zs, &int_pub._filter, keyexpr_aliased, _Z_INTEREST_FLAG_SUBSCRIBERS, false);
     if (res != _Z_RES_OK) {
         if (final_key._id != Z_RESOURCE_ID_NONE) {
             _z_undeclare_resource(_Z_RC_IN_VAL(zs), final_key._id);
@@ -1104,11 +1100,7 @@ z_result_t z_declare_publisher(const z_loaned_session_t *zs, z_owned_publisher_t
     return _Z_RES_OK;
 }
 
-z_result_t z_undeclare_publisher(z_moved_publisher_t *pub) {
-    z_result_t ret = _z_undeclare_publisher(&pub->_this._val);
-    _z_publisher_clear(&pub->_this._val);
-    return ret;
-}
+z_result_t z_undeclare_publisher(z_moved_publisher_t *pub) { return _z_undeclare_publisher(&pub->_this._val); }
 
 void z_publisher_put_options_default(z_publisher_put_options_t *options) {
     options->encoding = NULL;
@@ -1392,21 +1384,22 @@ z_result_t z_publisher_declare_background_matching_listener(const z_loaned_publi
 z_result_t z_publisher_declare_matching_listener(const z_loaned_publisher_t *publisher,
                                                  z_owned_matching_listener_t *matching_listener,
                                                  z_moved_closure_matching_status_t *callback) {
+    matching_listener->_val = _z_matching_listener_null();
     _z_session_rc_t sess_rc = _z_session_weak_upgrade_if_open(&publisher->_zn);
-    _z_matching_listener_t listener = _z_matching_listener_declare(&sess_rc, &publisher->_key, publisher->_id,
-                                                                   _Z_INTEREST_FLAG_SUBSCRIBERS, callback->_this._val);
-    _z_session_rc_drop(&sess_rc);
-
-    z_internal_closure_matching_status_null(&callback->_this);
-
-    matching_listener->_val = listener;
-
-    return _z_matching_listener_check(&listener) ? _Z_RES_OK : _Z_ERR_GENERIC;
+    if (!_Z_RC_IS_NULL(&sess_rc)) {
+        matching_listener->_val = _z_matching_listener_declare(
+            &publisher->_filter.ctx, _z_get_entity_id(_Z_RC_IN_VAL(&sess_rc)), &callback->_this._val);
+        _z_session_rc_drop(&sess_rc);
+    } else {
+        matching_listener->_val = _z_matching_listener_null();
+        z_internal_closure_matching_status_null(&callback->_this);
+    }
+    return _z_matching_listener_check(&matching_listener->_val) ? _Z_RES_OK : _Z_ERR_GENERIC;
 }
 
 z_result_t z_publisher_get_matching_status(const z_loaned_publisher_t *publisher,
                                            z_matching_status_t *matching_status) {
-    matching_status->matching = publisher->_filter.ctx->state != WRITE_FILTER_ACTIVE;
+    matching_status->matching = !_z_write_filter_active(&publisher->_filter);
     return _Z_RES_OK;
 }
 #endif  // Z_FEATURE_MATCHING == 1
@@ -1435,6 +1428,9 @@ void z_get_options_default(z_get_options_t *options) {
     options->payload = NULL;
     options->attachment = NULL;
     options->timeout_ms = Z_GET_TIMEOUT_DEFAULT;
+#ifdef Z_FEATURE_UNSTABLE_API
+    options->cancellation_token = NULL;
+#endif
 }
 
 z_result_t z_get(const z_loaned_session_t *zs, const z_loaned_keyexpr_t *keyexpr, const char *parameters,
@@ -1461,12 +1457,33 @@ z_result_t z_get_with_parameters_substr(const z_loaned_session_t *zs, const z_lo
         z_get_options_default(&opt);
     }
 
-    _z_n_qos_t qos = _z_n_qos_make(opt.is_express, opt.congestion_control == Z_CONGESTION_CONTROL_BLOCK, opt.priority);
-    ret = _z_query(_Z_RC_IN_VAL(zs), &keyexpr_aliased, parameters, parameters_len, opt.target, opt.consolidation.mode,
-                   _z_bytes_from_moved(opt.payload), _z_encoding_from_moved(opt.encoding), callback->_this._val.call,
-                   callback->_this._val.drop, ctx, opt.timeout_ms, _z_bytes_from_moved(opt.attachment), qos,
-                   opt.congestion_control);
+#ifdef Z_FEATURE_UNSTABLE_API
+    bool should_proceed = (opt.cancellation_token == NULL ||
+                           !_z_cancellation_token_is_cancelled(_Z_RC_IN_VAL(&opt.cancellation_token->_this._rc)));
+#else
+    bool should_proceed = true;
+#endif
+    if (should_proceed) {
+        _z_zint_t qid;
+        _z_n_qos_t qos =
+            _z_n_qos_make(opt.is_express, opt.congestion_control == Z_CONGESTION_CONTROL_BLOCK, opt.priority);
+        ret =
+            _z_query(_Z_RC_IN_VAL(zs), &keyexpr_aliased, parameters, parameters_len, opt.target, opt.consolidation.mode,
+                     _z_bytes_from_moved(opt.payload), _z_encoding_from_moved(opt.encoding), callback->_this._val.call,
+                     callback->_this._val.drop, ctx, opt.timeout_ms, _z_bytes_from_moved(opt.attachment), qos, &qid);
+#ifdef Z_FEATURE_UNSTABLE_API
+        if (ret == _Z_RES_OK && opt.cancellation_token != NULL) {
+            ret = _z_cancellation_token_add_on_query_cancel_handler(_Z_RC_IN_VAL(&opt.cancellation_token->_this._rc),
+                                                                    zs, qid);
+        }
+#endif
+    } else if (callback->_this._val.drop != NULL) {
+        callback->_this._val.drop(ctx);
+    }
     // Clean-up
+#ifdef Z_FEATURE_UNSTABLE_API
+    z_cancellation_token_drop(opt.cancellation_token);
+#endif
     z_bytes_drop(opt.payload);
     z_encoding_drop(opt.encoding);
     z_bytes_drop(opt.attachment);
@@ -1475,10 +1492,7 @@ z_result_t z_get_with_parameters_substr(const z_loaned_session_t *zs, const z_lo
     return ret;
 }
 
-void _z_querier_drop(_z_querier_t *querier) {
-    _z_undeclare_querier(querier);
-    _z_querier_clear(querier);
-}
+void _z_querier_drop(_z_querier_t *querier) { _z_undeclare_querier(querier); }
 
 _Z_OWNED_FUNCTIONS_VALUE_NO_COPY_NO_MOVE_IMPL(_z_querier_t, querier, _z_querier_check, _z_querier_null, _z_querier_drop)
 
@@ -1486,6 +1500,9 @@ void z_querier_get_options_default(z_querier_get_options_t *options) {
     options->encoding = NULL;
     options->attachment = NULL;
     options->payload = NULL;
+#ifdef Z_FEATURE_UNSTABLE_API
+    options->cancellation_token = NULL;
+#endif
 }
 
 void z_querier_options_default(z_querier_options_t *options) {
@@ -1530,8 +1547,8 @@ z_result_t z_declare_querier(const z_loaned_session_t *zs, z_owned_querier_t *qu
                                                   opt.target, opt.priority, opt.is_express, opt.timeout_ms,
                                                   opt.encoding == NULL ? NULL : &opt.encoding->_this._val, reliability);
     // Create write filter
-    z_result_t res =
-        _z_write_filter_create(_Z_RC_IN_VAL(zs), &int_querier._filter, keyexpr_aliased, _Z_INTEREST_FLAG_QUERYABLES);
+    z_result_t res = _z_write_filter_create(zs, &int_querier._filter, keyexpr_aliased, _Z_INTEREST_FLAG_QUERYABLES,
+                                            int_querier._target == Z_QUERY_TARGET_ALL_COMPLETE);
     if (res != _Z_RES_OK) {
         if (final_key._id != Z_RESOURCE_ID_NONE) {
             _z_undeclare_resource(_Z_RC_IN_VAL(zs), final_key._id);
@@ -1542,11 +1559,7 @@ z_result_t z_declare_querier(const z_loaned_session_t *zs, z_owned_querier_t *qu
     return _Z_RES_OK;
 }
 
-z_result_t z_undeclare_querier(z_moved_querier_t *querier) {
-    z_result_t ret = _z_undeclare_querier(&querier->_this._val);
-    _z_querier_clear(&querier->_this._val);
-    return ret;
-}
+z_result_t z_undeclare_querier(z_moved_querier_t *querier) { return _z_undeclare_querier(&querier->_this._val); }
 
 z_result_t z_querier_get(const z_loaned_querier_t *querier, const char *parameters, z_moved_closure_reply_t *callback,
                          z_querier_get_options_t *options) {
@@ -1580,7 +1593,7 @@ z_result_t z_querier_get_with_parameters_substr(const z_loaned_querier_t *querie
     _z_keyexpr_alias_from_user_defined(&querier_keyexpr, &querier->_key);
 
     _z_session_t *session = NULL;
-#if Z_FEATURE_SESSION_CHECK == 1
+#if defined(Z_FEATURE_UNSTABLE_API) || Z_FEATURE_SESSION_CHECK == 1
     // Try to upgrade session rc
     _z_session_rc_t sess_rc = _z_session_weak_upgrade_if_open(&querier->_zn);
     if (!_Z_RC_IS_NULL(&sess_rc)) {
@@ -1590,28 +1603,33 @@ z_result_t z_querier_get_with_parameters_substr(const z_loaned_querier_t *querie
         ret = _Z_ERR_SESSION_CLOSED;
     }
 #else
-    session = _Z_RC_IN_VAL(&querier->_zn);
+    session = _z_session_weak_as_unsafe_ptr(&querier->_zn);
 #endif
-
-    if (session != NULL) {
-        // Check if write filter is active before writing
-        if (
+    bool should_proceed = !_z_write_filter_active(&querier->_filter);
 #if Z_FEATURE_MULTICAST_DECLARATIONS == 0
-            session->_tp._type == _Z_TRANSPORT_MULTICAST_TYPE ||
+    should_proceed = should_proceed || (session->_tp._type == _Z_TRANSPORT_MULTICAST_TYPE);
 #endif
-            !_z_write_filter_active(&querier->_filter)) {
-            _z_n_qos_t qos = _z_n_qos_make(
-                querier->_is_express, querier->_congestion_control == Z_CONGESTION_CONTROL_BLOCK, querier->_priority);
-            ret = _z_query(session, &querier_keyexpr, parameters, parameters_len, querier->_target,
-                           querier->_consolidation_mode, _z_bytes_from_moved(opt.payload), &encoding,
-                           callback->_this._val.call, callback->_this._val.drop, ctx, querier->_timeout_ms,
-                           _z_bytes_from_moved(opt.attachment), qos, querier->_congestion_control);
-        } else {
-            callback->_this._val.drop(ctx);
+#ifdef Z_FEATURE_UNSTABLE_API
+    should_proceed =
+        should_proceed && (opt.cancellation_token == NULL ||
+                           !_z_cancellation_token_is_cancelled(_Z_RC_IN_VAL(&opt.cancellation_token->_this._rc)));
+#endif
+    if (should_proceed) {
+        _z_zint_t qid;
+        _z_n_qos_t qos = _z_n_qos_make(querier->_is_express, querier->_congestion_control == Z_CONGESTION_CONTROL_BLOCK,
+                                       querier->_priority);
+        ret = _z_query(session, &querier_keyexpr, parameters, parameters_len, querier->_target,
+                       querier->_consolidation_mode, _z_bytes_from_moved(opt.payload), &encoding,
+                       callback->_this._val.call, callback->_this._val.drop, ctx, querier->_timeout_ms,
+                       _z_bytes_from_moved(opt.attachment), qos, &qid);
+#ifdef Z_FEATURE_UNSTABLE_API
+        if (ret == _Z_RES_OK && opt.cancellation_token != NULL) {
+            ret = _z_cancellation_token_add_on_query_cancel_handler(_Z_RC_IN_VAL(&opt.cancellation_token->_this._rc),
+                                                                    &sess_rc, qid);
         }
-    } else {
-        _Z_ERROR_LOG(_Z_ERR_SESSION_CLOSED);
-        ret = _Z_ERR_SESSION_CLOSED;
+#endif
+    } else if (callback->_this._val.drop != NULL) {
+        callback->_this._val.drop(ctx);
     }
 
 #if Z_FEATURE_SESSION_CHECK == 1
@@ -1619,6 +1637,9 @@ z_result_t z_querier_get_with_parameters_substr(const z_loaned_querier_t *querie
 #endif
 
     // Clean-up
+#ifdef Z_FEATURE_UNSTABLE_API
+    z_cancellation_token_drop(opt.cancellation_token);
+#endif
     z_bytes_drop(opt.payload);
     _z_encoding_clear(&encoding);
     z_bytes_drop(opt.attachment);
@@ -1672,20 +1693,21 @@ z_result_t z_querier_declare_background_matching_listener(const z_loaned_querier
 z_result_t z_querier_declare_matching_listener(const z_loaned_querier_t *querier,
                                                z_owned_matching_listener_t *matching_listener,
                                                z_moved_closure_matching_status_t *callback) {
+    matching_listener->_val = _z_matching_listener_null();
     _z_session_rc_t sess_rc = _z_session_weak_upgrade_if_open(&querier->_zn);
-    _z_matching_listener_t listener = _z_matching_listener_declare(&sess_rc, &querier->_key, querier->_id,
-                                                                   _Z_INTEREST_FLAG_QUERYABLES, callback->_this._val);
-    _z_session_rc_drop(&sess_rc);
-
-    z_internal_closure_matching_status_null(&callback->_this);
-
-    matching_listener->_val = listener;
-
-    return _z_matching_listener_check(&listener) ? _Z_RES_OK : _Z_ERR_GENERIC;
+    if (!_Z_RC_IS_NULL(&sess_rc)) {
+        matching_listener->_val = _z_matching_listener_declare(
+            &querier->_filter.ctx, _z_get_entity_id(_Z_RC_IN_VAL(&sess_rc)), &callback->_this._val);
+        _z_session_rc_drop(&sess_rc);
+    } else {
+        matching_listener->_val = _z_matching_listener_null();
+        z_internal_closure_matching_status_null(&callback->_this);
+    }
+    return _z_matching_listener_check(&matching_listener->_val) ? _Z_RES_OK : _Z_ERR_GENERIC;
 }
 
 z_result_t z_querier_get_matching_status(const z_loaned_querier_t *querier, z_matching_status_t *matching_status) {
-    matching_status->matching = querier->_filter.ctx->state != WRITE_FILTER_ACTIVE;
+    matching_status->matching = !_z_write_filter_active(&querier->_filter);
     return _Z_RES_OK;
 }
 
@@ -1789,13 +1811,19 @@ z_result_t z_undeclare_queryable(z_moved_queryable_t *queryable) {
 
 const z_loaned_keyexpr_t *z_queryable_keyexpr(const z_loaned_queryable_t *queryable) {
     // Retrieve keyexpr from session
-    uint32_t lookup = queryable->_entity_id;
-    _z_session_rc_t s = _z_session_weak_upgrade_if_open(&queryable->_zn);
-    if (_Z_RC_IS_NULL(&s)) {
-        return NULL;
-    }
     const z_loaned_keyexpr_t *ret = NULL;
-    _z_session_queryable_rc_slist_t *node = _Z_RC_IN_VAL(&s)->_local_queryable;
+    uint32_t lookup = queryable->_entity_id;
+#if Z_FEATURE_SESSION_CHECK == 1
+    _z_session_rc_t sess_rc = _z_session_weak_upgrade_if_open(&queryable->_zn);
+    if (_Z_RC_IS_NULL(&sess_rc)) {
+        return ret;
+    }
+    _z_session_t *zn = _Z_RC_IN_VAL(&sess_rc);
+#else
+    _z_session_t *zn = _z_session_weak_as_unsafe_ptr(&sub->_zn);
+#endif
+    _z_session_mutex_lock(zn);
+    _z_session_queryable_rc_slist_t *node = zn->_local_queryable;
     while (node != NULL) {
         _z_session_queryable_rc_t *val = _z_session_queryable_rc_slist_value(node);
         if (_Z_RC_IN_VAL(val)->_id == lookup) {
@@ -1804,7 +1832,10 @@ const z_loaned_keyexpr_t *z_queryable_keyexpr(const z_loaned_queryable_t *querya
         }
         node = _z_session_queryable_rc_slist_next(node);
     }
-    _z_session_rc_drop(&s);
+    _z_session_mutex_unlock(zn);
+#if Z_FEATURE_SESSION_CHECK == 1
+    _z_session_rc_drop(&sess_rc);
+#endif
     return ret;
 }
 
@@ -2110,17 +2141,33 @@ z_result_t z_undeclare_subscriber(z_moved_subscriber_t *sub) {
 }
 
 const z_loaned_keyexpr_t *z_subscriber_keyexpr(const z_loaned_subscriber_t *sub) {
+    const z_loaned_keyexpr_t *ret = NULL;
     // Retrieve keyexpr from session
     uint32_t lookup = sub->_entity_id;
-    _z_subscription_rc_slist_t *node = _Z_RC_IN_VAL(&sub->_zn)->_subscriptions;
+#if Z_FEATURE_SESSION_CHECK == 1
+    _z_session_rc_t sess_rc = _z_session_weak_upgrade_if_open(&sub->_zn);
+    if (_Z_RC_IS_NULL(&sess_rc)) {
+        return ret;
+    }
+    _z_session_t *zn = _Z_RC_IN_VAL(&sess_rc);
+#else
+    _z_session_t *zn = _z_session_weak_as_unsafe_ptr(&sub->_zn);
+#endif
+    _z_session_mutex_lock(zn);
+    _z_subscription_rc_slist_t *node = zn->_subscriptions;
     while (node != NULL) {
         _z_subscription_rc_t *val = _z_subscription_rc_slist_value(node);
         if (_Z_RC_IN_VAL(val)->_id == lookup) {
-            return (const z_loaned_keyexpr_t *)&_Z_RC_IN_VAL(val)->_key;
+            ret = (const z_loaned_keyexpr_t *)&_Z_RC_IN_VAL(val)->_key;
+            break;
         }
         node = _z_subscription_rc_slist_next(node);
     }
-    return NULL;
+    _z_session_mutex_unlock(zn);
+#if Z_FEATURE_SESSION_CHECK == 1
+    _z_session_rc_drop(&sess_rc);
+#endif
+    return ret;
 }
 
 #ifdef Z_FEATURE_UNSTABLE_API
@@ -2337,4 +2384,35 @@ z_result_t zp_process_periodic_tasks(const z_loaned_session_t *zs) {
 
 #ifdef Z_FEATURE_UNSTABLE_API
 z_reliability_t z_reliability_default(void) { return Z_RELIABILITY_DEFAULT; }
+#endif
+
+#ifdef Z_FEATURE_UNSTABLE_API
+#if Z_FEATURE_QUERY == 1
+
+_Z_OWNED_FUNCTIONS_RC_IMPL(cancellation_token)
+
+z_result_t z_cancellation_token_new(z_owned_cancellation_token_t *cancellation_token) {
+    _z_cancellation_token_t *ct = (_z_cancellation_token_t *)z_malloc(sizeof(_z_cancellation_token_t));
+    if (ct == NULL) {
+        return _Z_ERR_SYSTEM_OUT_OF_MEMORY;
+    }
+    _Z_CLEAN_RETURN_IF_ERR(_z_cancellation_token_create(ct), z_free(ct));
+
+    cancellation_token->_rc = _z_cancellation_token_rc_new(ct);
+    if (_Z_RC_IS_NULL(&cancellation_token->_rc)) {
+        _z_cancellation_token_clear(ct);
+        z_free(ct);
+        return _Z_ERR_SYSTEM_OUT_OF_MEMORY;
+    }
+    return _Z_RES_OK;
+}
+
+z_result_t z_cancellation_token_cancel(z_loaned_cancellation_token_t *cancellation_token) {
+    return _z_cancellation_token_cancel(_Z_RC_IN_VAL(cancellation_token));
+}
+
+bool z_cancellation_token_is_cancelled(const z_loaned_cancellation_token_t *cancellation_token) {
+    return _z_cancellation_token_is_cancelled(_Z_RC_IN_VAL(cancellation_token));
+}
+#endif
 #endif

@@ -300,20 +300,20 @@ z_result_t _z_undeclare_querier(_z_querier_t *querier);
  *     arg: A pointer that will be passed to the **callback** on each call.
  *     timeout_ms: The timeout value of this query.
  *     attachment: An optional attachment to this query.
- *     cong_ctrl: The congestion control to apply when routing the query.
- *     priority: The priority of the query.
+ *     qos: QoS to apply when routing this query.
+ *     out_id: In case of success the query id will be written to it.
  *
  */
 z_result_t _z_query(_z_session_t *zn, const _z_keyexpr_t *keyexpr, const char *parameters, size_t parameters_len,
                     z_query_target_t target, z_consolidation_mode_t consolidation, const _z_bytes_t *payload,
                     const _z_encoding_t *encoding, _z_closure_reply_callback_t callback, _z_drop_handler_t dropper,
-                    void *arg, uint64_t timeout_ms, const _z_bytes_t *attachment, _z_n_qos_t qos,
-                    z_congestion_control_t cong_ctrl);
+                    void *arg, uint64_t timeout_ms, const _z_bytes_t *attachment, _z_n_qos_t qos, _z_zint_t *out_id);
+
 #endif
 
 #if Z_FEATURE_INTEREST == 1
 uint32_t _z_add_interest(_z_session_t *zn, _z_keyexpr_t keyexpr, _z_interest_handler_t callback, uint8_t flags,
-                         void *arg);
+                         _z_void_rc_t *arg);
 z_result_t _z_remove_interest(_z_session_t *zn, uint32_t interest_id);
 #endif
 
