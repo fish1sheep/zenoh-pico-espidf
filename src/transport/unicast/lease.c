@@ -50,6 +50,13 @@ static void _zp_unicast_failed(_z_transport_unicast_t *ztu) {
 #if Z_FEATURE_AUTO_RECONNECT == 1
     _z_session_rc_t zs = _z_session_weak_upgrade(&ztu->_common._session);
 #endif
+    if (ztu->_common._read_task != NULL) {
+        ztu->_common._read_task_running = false;
+        _z_task_join(ztu->_common._read_task);
+        _z_task_free(&ztu->_common._read_task);
+    }
+    ztu->_common._lease_task_running = false;
+
     _z_unicast_transport_close(ztu, _Z_CLOSE_EXPIRED);
     _z_unicast_transport_clear(ztu, true);
 
@@ -137,8 +144,6 @@ void *_zp_unicast_lease_task(void *ztu_arg) {
                     // Drop if needed
                     if (drop_peer) {
                         _z_session_t *zs = _z_transport_common_get_session(&ztu->_common);
-                        _z_subscription_cache_invalidate(zs);
-                        _z_queryable_cache_invalidate(zs);
                         _z_interest_peer_disconnected(zs, &curr_peer->common);
                         ztu->_peers = _z_transport_peer_unicast_slist_drop_element(ztu->_peers, prev_drop);
                     }

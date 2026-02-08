@@ -25,6 +25,7 @@
 #include "zenoh-pico/link/link.h"
 #include "zenoh-pico/protocol/core.h"
 #include "zenoh-pico/protocol/definitions/transport.h"
+#include "zenoh-pico/session/weak_session.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,7 @@ typedef _z_slist_t _z_resource_slist_t;
 
 typedef struct {
     _z_id_t _remote_zid;
+    z_whatami_t _remote_whatami;
     volatile bool _received;
     _z_resource_slist_t *_remote_resources;
 #if Z_FEATURE_FRAGMENTATION == 1
@@ -93,6 +95,11 @@ typedef enum _z_unicast_peer_flow_state_e {
 typedef struct {
     _z_transport_peer_common_t common;
     _z_sys_net_socket_t _socket;
+    // FIXME: Temporary ownership flag to avoid double-closing sockets
+    // when link and peer structs alias the same underlying fd/TLS.
+    // This should be replaced by proper, explicit ownership semantics
+    // (e.g. a ref-counted socket/TLS handle or single authoritative owner).
+    bool _owns_socket;
     // SN numbers
     _z_zint_t _sn_rx_reliable;
     _z_zint_t _sn_rx_best_effort;
@@ -113,9 +120,6 @@ _Z_SLIST_DEFINE(_z_transport_peer_unicast, _z_transport_peer_unicast_t, true)
 
 #define _Z_RES_POOL_INIT_SIZE 8  // Arbitrary small value
 
-typedef struct _z_session_t _z_session_t;
-extern void _z_session_clear(_z_session_t *zn);  // Forward declaration to avoid cyclical include
-_Z_REFCOUNT_DEFINE_NO_FROM_VAL(_z_session, _z_session)
 typedef struct {
     _z_session_weak_t _session;
     _z_link_t *_link;
@@ -180,7 +184,7 @@ typedef struct {
     _z_zint_t _initial_sn_rx;
     _z_zint_t _initial_sn_tx;
     _z_zint_t _lease;
-    z_whatami_t _whatami;
+    z_whatami_t _remote_whatami;
     uint8_t _key_id_res;
     uint8_t _req_id_res;
     uint8_t _seq_num_res;
@@ -196,7 +200,8 @@ typedef struct {
 } _z_transport_multicast_establish_param_t;
 
 z_result_t _z_transport_peer_unicast_add(_z_transport_unicast_t *ztu, _z_transport_unicast_establish_param_t *param,
-                                         _z_sys_net_socket_t socket, _z_transport_peer_unicast_t **output_peer);
+                                         _z_sys_net_socket_t socket, bool owns_socket,
+                                         _z_transport_peer_unicast_t **output_peer);
 _z_transport_common_t *_z_transport_get_common(_z_transport_t *zt);
 z_result_t _z_transport_close(_z_transport_t *zt, uint8_t reason);
 void _z_transport_clear(_z_transport_t *zt);

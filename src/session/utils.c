@@ -57,14 +57,15 @@ z_result_t _z_session_init(_z_session_t *zn, const _z_id_t *zid) {
 
 #if Z_FEATURE_MULTI_THREAD == 1
     zn->_mutex_inner_initialized = false;
-    ret = _z_mutex_init(&zn->_mutex_inner);
-    if (ret != _Z_RES_OK) {
-        return ret;
-    }
+    _Z_RETURN_IF_ERR(_z_mutex_init(&zn->_mutex_inner));
     zn->_mutex_inner_initialized = true;
 #endif
     zn->_mode = Z_WHATAMI_CLIENT;
     zn->_tp._type = _Z_TRANSPORT_NONE;
+#if Z_FEATURE_MULTI_THREAD == 1
+    zn->_read_task_should_run = false;
+    zn->_lease_task_should_run = false;
+#endif
     // Initialize the counters to 1
     zn->_entity_id = 1;
     zn->_resource_id = 1;
@@ -98,10 +99,16 @@ z_result_t _z_session_init(_z_session_t *zn, const _z_id_t *zid) {
     _z_liveliness_init(zn);
 #endif
 
+#if Z_FEATURE_INTEREST == 1
+    zn->_write_filters = NULL;
+#endif
+
 #ifdef Z_FEATURE_UNSTABLE_API
 #if Z_FEATURE_PERIODIC_TASKS == 1
 #if Z_FEATURE_MULTI_THREAD == 1
     zn->_periodic_scheduler_task = NULL;
+    zn->_periodic_task_should_run = false;
+    zn->_periodic_scheduler_task_attr = NULL;
 #endif
     ret = _zp_periodic_scheduler_init(&zn->_periodic_scheduler);
     if (ret != _Z_RES_OK) {
@@ -109,6 +116,10 @@ z_result_t _z_session_init(_z_session_t *zn, const _z_id_t *zid) {
         _z_mutex_drop(&zn->_mutex_inner);
         _Z_ERROR_RETURN(ret);
     }
+#endif
+
+#if Z_FEATURE_ADMIN_SPACE == 1
+    zn->_admin_space_queryable_id = 0;
 #endif
 #endif
 
@@ -145,15 +156,10 @@ void _z_session_clear(_z_session_t *zn) {
         _z_flush_local_resources(zn);
 #if Z_FEATURE_SUBSCRIPTION == 1
         _z_flush_subscriptions(zn);
-#if Z_FEATURE_RX_CACHE == 1
-        _z_subscription_lru_cache_delete(&zn->_subscription_cache);
-#endif
 #endif
 #if Z_FEATURE_QUERYABLE == 1
+        // Admin space querable cleanup will occur as part of queryable cleanup
         _z_flush_session_queryable(zn);
-#if Z_FEATURE_RX_CACHE == 1
-        _z_queryable_lru_cache_delete(&zn->_queryable_cache);
-#endif
 #endif
 #if Z_FEATURE_QUERY == 1
         _z_flush_pending_queries(zn);
@@ -172,6 +178,17 @@ void _z_session_clear(_z_session_t *zn) {
     }
 #endif
 #endif
+
+#if Z_FEATURE_MULTI_THREAD == 1
+    zn->_read_task_should_run = false;
+    zn->_lease_task_should_run = false;
+#ifdef Z_FEATURE_UNSTABLE_API
+#if Z_FEATURE_PERIODIC_TASKS == 1
+    zn->_periodic_task_should_run = false;
+    zn->_periodic_scheduler_task_attr = NULL;
+#endif
+#endif  // Z_FEATURE_UNSTABLE_API
+#endif  // Z_FEATURE_MULTI_THREAD == 1
 
 #if Z_FEATURE_MULTI_THREAD == 1
     if (zn->_mutex_inner_initialized) {

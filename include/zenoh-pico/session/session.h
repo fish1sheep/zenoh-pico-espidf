@@ -18,12 +18,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "zenoh-pico/api/constants.h"
 #include "zenoh-pico/collections/element.h"
 #include "zenoh-pico/collections/list.h"
 #include "zenoh-pico/collections/refcount.h"
 #include "zenoh-pico/collections/string.h"
 #include "zenoh-pico/config.h"
 #include "zenoh-pico/protocol/core.h"
+#include "zenoh-pico/session/keyexpr.h"
 #include "zenoh-pico/transport/manager.h"
 
 #ifdef __cplusplus
@@ -41,7 +43,7 @@ typedef enum {
 } _z_subscriber_kind_t;
 
 typedef struct {
-    _z_keyexpr_t _key;
+    _z_string_t _key;
     uint16_t _id;
     uint16_t _refcount;
 } _z_resource_t;
@@ -59,6 +61,7 @@ _Z_SLIST_DEFINE(_z_resource, _z_resource_t, true)
 _Z_ELEM_DEFINE(_z_keyexpr, _z_keyexpr_t, _z_keyexpr_size, _z_keyexpr_clear, _z_keyexpr_copy, _z_keyexpr_move,
                _z_noop_eq, _z_noop_cmp, _z_noop_hash)
 _Z_INT_MAP_DEFINE(_z_keyexpr, _z_keyexpr_t)
+_Z_SLIST_DEFINE(_z_keyexpr, _z_keyexpr_t, true)
 
 // Forward declaration to avoid cyclical include
 typedef struct _z_sample_t _z_sample_t;
@@ -70,9 +73,8 @@ typedef void (*_z_closure_sample_callback_t)(_z_sample_t *sample, void *arg);
 
 typedef struct {
     _z_keyexpr_t _key;
-    _z_keyexpr_t _declared_key;
-    uint16_t _key_id;
     uint32_t _id;
+    z_locality_t _allowed_origin;
     _z_closure_sample_callback_t _callback;
     _z_drop_handler_t _dropper;
     void *_arg;
@@ -103,12 +105,12 @@ typedef void (*_z_closure_query_callback_t)(_z_query_rc_t *query, void *arg);
 
 typedef struct {
     _z_keyexpr_t _key;
-    _z_keyexpr_t _declared_key;
     uint32_t _id;
     _z_closure_query_callback_t _callback;
     _z_drop_handler_t _dropper;
     void *_arg;
     bool _complete;
+    z_locality_t _allowed_origin;
 } _z_session_queryable_t;
 
 bool _z_session_queryable_eq(const _z_session_queryable_t *one, const _z_session_queryable_t *two);
@@ -137,9 +139,11 @@ typedef struct {
     _z_zint_t _id;
     _z_closure_reply_callback_t _callback;
     _z_drop_handler_t _dropper;
+    z_locality_t _allowed_destination;
     z_clock_t _start_time;
     uint64_t _timeout;
     void *_arg;
+    uint8_t _remaining_finals;
     _z_pending_reply_slist_t *_pending_replies;
     z_query_target_t _target;
     z_consolidation_mode_t _consolidation;
@@ -215,6 +219,7 @@ typedef enum {
 
 typedef struct {
     _z_keyexpr_t _key;
+    _z_transport_peer_common_t *_peer;
     uint32_t _id;
     uint8_t _type;
     bool _complete;

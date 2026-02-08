@@ -17,7 +17,7 @@
 #ifndef ZENOH_PICO_H
 #define ZENOH_PICO_H
 
-#define ZENOH_PICO "1.6.2"
+#define ZENOH_PICO "1.7.2"
 #define ZENOH_PICO_MAJOR 1
 #define ZENOH_PICO_MINOR 5
 #define ZENOH_PICO_PATCH 0
