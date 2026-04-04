@@ -20,6 +20,7 @@
 #include "zenoh-pico/collections/hashmap.h"
 #include "zenoh-pico/collections/refcount.h"
 #include "zenoh-pico/collections/sortedmap.h"
+#include "zenoh-pico/runtime/runtime.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,7 +48,7 @@ typedef struct {
     uint32_t _last_delivered;
     uint64_t _pending_queries;
     _z_uint32__z_sample_sortedmap_t _pending_samples;
-    uint32_t _periodic_query_id;
+    _z_fut_handle_t _periodic_query_handle;
     z_owned_keyexpr_t _query_keyexpr;
 } _ze_advanced_subscriber_sequenced_state_t;
 
@@ -82,10 +83,25 @@ _Z_HASHMAP_DEFINE(_z_entity_global_id, _ze_advanced_subscriber_sequenced_state, 
                   _ze_advanced_subscriber_sequenced_state_t)
 _Z_HASHMAP_DEFINE(_z_id, _ze_advanced_subscriber_timestamped_state, z_id_t, _ze_advanced_subscriber_timestamped_state_t)
 
-static void _ze_closure_miss_copy(_ze_closure_miss_t *dst, const _ze_closure_miss_t *src) { *dst = *src; }
+static inline _ze_closure_miss_t _ze_closure_miss_null(void) {
+    _ze_closure_miss_t miss = {0};
+    return miss;
+}
+static inline void _ze_closure_miss_drop(_ze_closure_miss_t *closure) {
+    if (closure->drop != NULL) {
+        closure->drop(closure->context);
+    }
+    *closure = _ze_closure_miss_null();
+}
 
-_Z_ELEM_DEFINE(_ze_closure_miss, _ze_closure_miss_t, _z_noop_size, _z_noop_clear, _ze_closure_miss_copy, _z_noop_move,
-               _z_noop_eq, _z_noop_cmp, _z_noop_hash)
+static inline void _ze_closure_miss_copy(_ze_closure_miss_t *dst, const _ze_closure_miss_t *src) { *dst = *src; }
+static inline void _ze_closure_miss_move(_ze_closure_miss_t *dst, _ze_closure_miss_t *src) {
+    *dst = *src;
+    *src = _ze_closure_miss_null();
+}
+
+_Z_ELEM_DEFINE(_ze_closure_miss, _ze_closure_miss_t, _z_noop_size, _ze_closure_miss_drop, _ze_closure_miss_copy,
+               _z_noop_move, _z_noop_eq, _z_noop_cmp, _z_noop_hash)
 _Z_INT_MAP_DEFINE(_ze_closure_miss, _ze_closure_miss_t)
 
 typedef struct {
@@ -111,6 +127,8 @@ typedef struct {
     _ze_closure_miss_intmap_t _miss_handlers;
     bool _has_token;
     z_owned_liveliness_token_t _token;
+    z_owned_cancellation_token_t _cancellation_token;
+    bool _is_undeclaring;
 } _ze_advanced_subscriber_state_t;
 
 _ze_advanced_subscriber_state_t _ze_advanced_subscriber_state_null(void);
@@ -128,7 +146,7 @@ typedef struct {
 } _ze_advanced_subscriber_t;
 
 _Z_OWNED_TYPE_VALUE_PREFIX(ze, _ze_advanced_subscriber_t, advanced_subscriber)
-_Z_OWNED_FUNCTIONS_NO_COPY_NO_MOVE_DEF_PREFIX(ze, advanced_subscriber)
+_Z_OWNED_FUNCTIONS_NO_COPY_NO_TAKE_FROM_LOANED_DEF_PREFIX(ze, advanced_subscriber)
 
 typedef struct {
     size_t _id;
@@ -141,7 +159,7 @@ static inline bool _ze_sample_miss_listener_check(const _ze_sample_miss_listener
 }
 
 _Z_OWNED_TYPE_VALUE_PREFIX(ze, _ze_sample_miss_listener_t, sample_miss_listener)
-_Z_OWNED_FUNCTIONS_NO_COPY_NO_MOVE_DEF_PREFIX(ze, sample_miss_listener)
+_Z_OWNED_FUNCTIONS_NO_COPY_NO_TAKE_FROM_LOANED_DEF_PREFIX(ze, sample_miss_listener)
 
 #ifdef Z_FEATURE_UNSTABLE_API
 #if Z_FEATURE_ADVANCED_SUBSCRIPTION == 1

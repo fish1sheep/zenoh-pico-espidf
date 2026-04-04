@@ -29,7 +29,7 @@
 
 bool _z_resource_eq(const _z_resource_t *other, const _z_resource_t *this_) { return this_->_id == other->_id; }
 
-void _z_resource_clear(_z_resource_t *res) { _z_string_clear(&res->_key); }
+void _z_resource_clear(_z_resource_t *res) { _z_keyexpr_clear(&res->_key); }
 
 size_t _z_resource_size(_z_resource_t *p) {
     _ZP_UNUSED(p);
@@ -37,7 +37,7 @@ size_t _z_resource_size(_z_resource_t *p) {
 }
 
 void _z_resource_copy(_z_resource_t *dst, const _z_resource_t *src) {
-    _z_string_copy(&dst->_key, &src->_key);
+    _z_keyexpr_copy(&dst->_key, &src->_key);
     dst->_id = src->_id;
 }
 
@@ -75,12 +75,12 @@ _z_resource_t *_z_get_resource_by_id_inner(_z_resource_slist_t *rl, const _z_zin
     return ret;
 }
 
-_z_resource_t *_z_get_resource_by_key_inner(_z_resource_slist_t *rl, const _z_string_t *keyexpr) {
+_z_resource_t *_z_get_resource_by_key_inner(_z_resource_slist_t *rl, const _z_keyexpr_t *keyexpr) {
     _z_resource_t *ret = NULL;
     _z_resource_slist_t *xs = rl;
     while (xs != NULL) {
         _z_resource_t *r = _z_resource_slist_value(xs);
-        if (_z_string_equals(&r->_key, keyexpr)) {
+        if (_z_keyexpr_equals(&r->_key, keyexpr)) {
             ret = r;
             break;
         }
@@ -108,17 +108,9 @@ static z_result_t _z_get_keyexpr_from_wireexpr_inner(_z_keyexpr_t *ret, _z_resou
         if (res == NULL) {
             return _Z_ERR_KEYEXPR_UNKNOWN;
         }
-        _z_keyexpr_t ke_prefix = _z_keyexpr_alias_from_substr(_z_string_data(&res->_key), _z_string_len(&res->_key));
-        return _z_keyexpr_concat(ret, &ke_prefix, _z_string_data(&expr->_suffix), _z_string_len(&expr->_suffix));
+        _z_keyexpr_t ke_prefix = _z_keyexpr_alias(&res->_key);
+        return _z_string_concat(&ret->_keyexpr, &ke_prefix._keyexpr, &expr->_suffix, NULL, 0);
     }
-}
-
-_z_resource_t *_z_get_resource_by_id(_z_session_t *zn, _z_zint_t rid, _z_transport_peer_common_t *peer) {
-    _z_session_mutex_lock(zn);
-    _z_resource_slist_t *decls = peer == NULL ? zn->_local_resources : peer->_remote_resources;
-    _z_resource_t *res = _z_get_resource_by_id_inner(decls, rid);
-    _z_session_mutex_unlock(zn);
-    return res;
 }
 
 z_result_t _z_get_keyexpr_from_wireexpr(_z_session_t *zn, _z_keyexpr_t *out, const _z_wireexpr_t *expr,
@@ -135,61 +127,61 @@ z_result_t _z_get_keyexpr_from_wireexpr(_z_session_t *zn, _z_keyexpr_t *out, con
     return ret;
 }
 
-uint16_t _z_register_resource_inner(_z_session_t *zn, const _z_wireexpr_t *expr, uint16_t id,
-                                    _z_transport_peer_common_t *peer) {
+z_result_t _z_register_resource_inner(_z_session_t *zn, const _z_wireexpr_t *expr, uint16_t id,
+                                      _z_transport_peer_common_t *peer, uint16_t *out_id) {
     _z_resource_slist_t **resources = (peer == NULL) ? &zn->_local_resources : &peer->_remote_resources;
     _z_resource_slist_t *parent_resources =
         (expr->_mapping == _Z_KEYEXPR_MAPPING_LOCAL) ? zn->_local_resources : peer->_remote_resources;
 
-    _z_string_t new_key = _z_string_null();
+    _z_keyexpr_t new_key = _z_keyexpr_null();
     if (expr->_id != Z_RESOURCE_ID_NONE) {
         _z_resource_t *res = _z_get_resource_by_id_inner(parent_resources, expr->_id);
         if (res == NULL) {
             _Z_ERROR("Unknown scope: %d, for mapping: %zu", (unsigned int)expr->_id, (size_t)expr->_mapping);
-            return Z_RESOURCE_ID_NONE;
+            return _Z_ERR_ENTITY_DECLARATION_FAILED;
         }
         if (_z_wireexpr_has_suffix(expr)) {
-            if (_z_string_concat(&new_key, &res->_key, &expr->_suffix, NULL, 0) != _Z_RES_OK) {
+            if (_z_string_concat(&new_key._keyexpr, &res->_key._keyexpr, &expr->_suffix, NULL, 0) != _Z_RES_OK) {
                 _Z_ERROR("Failed to allocate memory for new string");
-                return Z_RESOURCE_ID_NONE;
+                return _Z_ERR_SYSTEM_OUT_OF_MEMORY;
             }
         } else if (id == Z_RESOURCE_ID_NONE && *resources == parent_resources) {
             // declaration of already declared resource
             res->_refcount++;
-            return res->_id;
+            *out_id = res->_id;
+            return _Z_RES_OK;
         } else {  // redeclaration of exisiting resource
-            new_key = _z_string_alias(res->_key);
+            new_key = _z_keyexpr_alias(&res->_key);
         }
     } else {
-        new_key = _z_string_alias(expr->_suffix);
+        new_key = _z_keyexpr_alias_from_string(&expr->_suffix);
     }
 
     if (id == Z_RESOURCE_ID_NONE) {
-        _z_resource_t *res = _z_get_resource_by_key_inner(resources, &new_key);
+        _z_resource_t *res = _z_get_resource_by_key_inner(*resources, &new_key);
         if (res != NULL) {  // declaration of already declared resource
             res->_refcount++;
-            _z_string_clear(&new_key);
-            return res->_id;
+            _z_keyexpr_clear(&new_key);
+            *out_id = res->_id;
+            return _Z_RES_OK;
         }
     }
-    _z_string_t ke_string;
-    if (_z_string_move(&ke_string, &new_key) != _Z_RES_OK) {
-        return Z_RESOURCE_ID_NONE;
-    }
+    _z_keyexpr_t ke;
+    _Z_RETURN_IF_ERR(_z_keyexpr_move(&ke, &new_key));
 
     *resources = _z_resource_slist_push_empty(*resources);
     _z_resource_t *res = _z_resource_slist_value(*resources);
     res->_refcount = 1;
-    res->_key = ke_string;
+    res->_key = ke;
     res->_id = id == Z_RESOURCE_ID_NONE ? _z_get_resource_id(zn) : id;
-    return res->_id;
+    *out_id = res->_id;
+    return _Z_RES_OK;
 }
 
-/// Returns the ID of the registered keyexpr. Returns 0 if registration failed.
-uint16_t _z_register_resource(_z_session_t *zn, const _z_wireexpr_t *expr, uint16_t id,
-                              _z_transport_peer_common_t *peer) {
-    _z_session_mutex_lock(zn);
-    uint16_t ret = _z_register_resource_inner(zn, expr, id, peer);
+z_result_t _z_register_resource(_z_session_t *zn, const _z_wireexpr_t *expr, uint16_t id,
+                                _z_transport_peer_common_t *peer, uint16_t *out_id) {
+    _Z_RETURN_IF_ERR(_z_session_mutex_lock_if_open(zn));
+    z_result_t ret = _z_register_resource_inner(zn, expr, id, peer, out_id);
     _z_session_mutex_unlock(zn);
 
     return ret;
