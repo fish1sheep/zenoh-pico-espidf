@@ -35,7 +35,7 @@ Clone this repository into your project's `components/` directory:
 
 ```bash
 cd your_project/components/
-git clone https://github.com/Pico-ROS/picoros-espidf-component zenoh-pico
+git clone https://github.com/fish1sheep/zenoh-pico-espidf zenoh-pico
 ```
 
 Alternatively, copy the `zenoh-pico-espidf` folder directly into `components/`.
@@ -196,7 +196,7 @@ The component is automatically compiled with the `ZENOH_ESPIDF` preprocessor fla
 - [zenoh-pico (upstream)](https://github.com/eclipse-zenoh/zenoh-pico)
 - [zenoh documentation](https://zenoh.io/docs/)
 - [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/)
-- [Pico-ROS project](https://github.com/Pico-ROS)
+- [zenoh-pico-espidf (GitHub)](https://github.com/fish1sheep/zenoh-pico-espidf)
 
 ## License
 
