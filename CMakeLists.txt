@@ -15,19 +15,22 @@ file(GLOB_RECURSE SOURCES_GLOB
 
 # Include directories
 set(INCLUDES
-        "include/"
-        "include/zenoh-pico/"
+        "include"
+        "include/zenoh-pico"
 )
 
-# Register component
 idf_component_register(
-            SRCS
-                ${SOURCES_GLOB}
-            INCLUDE_DIRS
-                ${INCLUDES}
-            REQUIRES
-                driver
-            )
+        SRCS
+            ${SOURCES_GLOB}
 
-# Set compile flags
-idf_build_set_property(COMPILE_OPTIONS "-DZENOH_ESPIDF" APPEND)
+        INCLUDE_DIRS
+            ${INCLUDES}
+
+        REQUIRES
+            esp_driver_uart
+)
+
+target_compile_definitions(${COMPONENT_LIB}
+        PRIVATE
+            ZENOH_ESPIDF
+)
