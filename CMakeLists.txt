@@ -10,7 +10,7 @@ file(GLOB_RECURSE SOURCES_GLOB
         "src/utils/*.c"
         "src/system/espidf/*.c"
         "src/system/common/*.c"
-
+        "src/runtime/*.c"
 )
 
 # Include directories
