@@ -6,7 +6,7 @@ file(GLOB_RECURSE SOURCES_GLOB
         "src/net/*.c"
         "src/protocol/*.c"
         "src/session/*.c"
-        "transport/*.c"
+        "src/transport/*.c"
         "src/utils/*.c"
         "src/system/espidf/*.c"
         "src/system/common/*.c"
