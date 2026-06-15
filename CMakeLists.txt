@@ -10,6 +10,7 @@ file(GLOB_RECURSE SOURCES_GLOB
         "src/utils/*.c"
         "src/system/espidf/*.c"
         "src/system/common/*.c"
+        "src/system/socket/*.c"
         "src/runtime/*.c"
 )
 
@@ -31,6 +32,6 @@ idf_component_register(
 )
 
 target_compile_definitions(${COMPONENT_LIB}
-        PRIVATE
+        PUBLIC
             ZENOH_ESPIDF
 )
